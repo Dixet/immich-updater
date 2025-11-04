@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>Immich Metadata Updater</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --fg: #111;
+      --muted: #666;
+      --bg: #fafafa;
+      --line: #e5e7eb;
+      --accent: #2563eb;
+      --danger: #b91c1c;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+      color: var(--fg);
+      background: var(--bg);
+      margin: 0;
+    }
+
+    header {
+      padding: 16px 20px;
+      background: white;
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    h1 {
+      font-size: 18px;
+      margin: 0 0 4px 0;
+    }
+
+    small {
+      color: var(--muted);
+    }
+
+    main {
+      padding: 20px;
+    }
+
+    form.search {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      gap: 12px;
+      align-items: end;
+      background: white;
+      border: 1px solid var(--line);
+      padding: 12px;
+      border-radius: 12px;
+    }
+
+    form.search .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    input[type="text"],
+    input[type="number"],
+    textarea,
+    select {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 14px;
+      background: #fff;
+    }
+
+    textarea {
+      min-height: 72px;
+      resize: vertical;
+    }
+
+    button,
+    .btn {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: #fff;
+      padding: 8px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .btn.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .btn.danger {
+      background: var(--danger);
+      color: #fff;
+      border-color: var(--danger);
+    }
+
+    .stack {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .mt16 {
+      margin-top: 16px;
+    }
+
+    .mt8 {
+      margin-top: 8px;
+    }
+
+    .card {
+      background: white;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    th {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    code.k {
+      background: #f3f4f6;
+      padding: 2px 6px;
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+
+    .right {
+      text-align: right;
+    }
+
+    .chip {
+      font-size: 12px;
+      background: #eef2ff;
+      color: #3730a3;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid #c7d2fe;
+    }
+
+    .nowrap {
+      white-space: nowrap;
+    }
+
+    .progress {
+      display: none;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .w-100 {
+      width: 100%;
+    }
+
+    .center {
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>Immich Metadata Updater</h1>
+    <small>Search assets by file/tag, guess new datetime from filename, and push updates.</small>
+  </header>
+
+  <main>
+    <!-- Search / Params -->
+    <form class="search" action="/ui/search" method="GET">
+      <div class="field">
+        <label for="file">Filename filter (contains)</label>
+        <input id="file" name="file" type="text" placeholder="e.g. IMG-20230414"
+          value="{{ request.args.get('file','') if request and request.args else (params.get('file','') if params else '') }}" />
+      </div>
+      <div class="field">
+        <label for="tag">Tag name (filter)</label>
+        <input id="tag" name="tag" type="text" placeholder="e.g. toupdate"
+          value="{{ request.args.get('tag','') if request and request.args else (params.get('tag','') if params else '') }}" />
+      </div>
+      <div class="field">
+        <label for="limit">Limit</label>
+        <input id="limit" name="limit" type="number" min="1" max="1000" step="1"
+          value="{{ request.args.get('limit','200') if request and request.args else (params.get('limit',200) if params else 200) }}" />
+      </div>
+      <div class="field" style="grid-column: span 3;">
+        <label for="patterns">Regex patterns (one per line, use JS-compatible groups: <code
+            class="k">(?&lt;year&gt;)</code>, <code class="k">(?&lt;month&gt;)</code>, <code
+            class="k">(?&lt;day&gt;)</code>)</label>
+        <textarea id="patterns" name="patterns"
+          placeholder="^IMG-(?&lt;year&gt;\\d{4})(?&lt;month&gt;\\d{2})(?&lt;day&gt;\\d{2})-WA\\d+&#92;.jpg$">{{ request.args.get('patterns','') if request and request.args else (params.get('patterns','') if params else '') }}</textarea>
+      </div>
+      <div class="field">
+        <button class="btn primary" type="submit">Search</button>
+      </div>
+      <div class="field">
+        <a class="btn" href="/health" target="_blank">Health</a>
+      </div>
+      <div class="field">
+        <a class="btn" href="/tags" target="_blank">List Tags</a>
+      </div>
+    </form>
+
+    <!-- Summary -->
+    <div class="stack mt16">
+      <span class="chip">Results: <strong id="resultCount">{{ (results|length) if results else 0 }}</strong></span>
+      {% if params and params.get('tag') %}
+      <span class="chip">Tag filter: {{ params.get('tag') }}</span>
+      {% endif %}
+      {% if params and params.get('file') %}
+      <span class="chip">Filename filter: {{ params.get('file') }}</span>
+      {% endif %}
+    </div>
+
+    <!-- Actions -->
+    <div class="stack mt8">
+      <button id="btnUpdateAll" class="btn primary">Update All (visible)</button>
+      <button id="btnSelectAll" class="btn">Select All</button>
+      <button id="btnClearSel" class="btn">Clear Selection</button>
+      <span class="muted">Updates will use the guessed <em>date</em> + the asset's actual <em>time-of-day</em>.</span>
+    </div>
+
+    <!-- Results Table -->
+    <div class="card mt16">
+      <div class="progress" id="progressBar">Working…</div>
+      <div class="w-100">
+        <table id="resultTable">
+          <thead>
+            <tr>
+              <th class="center"><input type="checkbox" id="checkAll" aria-label="Select all rows"></th>
+              <th>UUID</th>
+              <th>Filename</th>
+              <th>Actual datetime</th>
+              <th>Actual time</th>
+              <th>Guessed date</th>
+              <th>Guessed datetime</th>
+              <th class="right">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="tbody">
+            {% for a in results or [] %}
+            {% set actual_dt = (a.get('exifInfo',{}).get('dateTimeOriginal') or a.get('fileCreatedAt') or
+            a.get('localDateTime') or a.get('updatedAt') or '') %}
+            {% set filename = a.get('originalFileName', a.get('fileName', '')) %}
+            {% set guessed_date = a.get('guessed_date','') %}
+            <tr data-id="{{ a.get('id','') }}" data-filename="{{ filename|e }}" data-actual="{{ actual_dt|e }}">
+              <td class="center"><input type="checkbox" class="rowCheck" aria-label="Select row"></td>
+              <td class="nowrap"><code class="k">{{ a.get('id','') }}</code></td>
+              <td>{{ filename }}</td>
+              <td class="nowrap actual-dt">{{ actual_dt }}</td>
+              <td class="nowrap actual-time"></td>
+              <td class="nowrap guess-date">
+                {% if guessed_date %}{{ guessed_date }}{% else %}<span class="muted">—</span>{% endif %}
+              </td>
+              <td class="nowrap guess-dt"></td>
+              <td class="right">
+                <button class="btn updateBtn" data-id="{{ a.get('id','') }}">Update</button>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        {% if not results or (results|length) == 0 %}
+        <p class="muted mt8">No results. Try a different filename filter, tag, or adjust your patterns.</p>
+        {% endif %}
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // -------- Utilities --------
+    function parseISO(dt) { const d = new Date(dt); return isNaN(d.getTime()) ? null : d; }
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function fmtISO(d) {
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' +
+        pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + 'Z';
+    }
+    function getActualTimePart(dtStr) {
+      const d = parseISO(dtStr);
+      if (!d) return null;
+      return { h: d.getUTCHours(), m: d.getUTCMinutes(), s: d.getUTCSeconds() };
+    }
+    function buildDate(y, m, d) { // y: 4-digit, m/d 1-12/1-31
+      const Y = Number(y), M = Number(m), D = Number(d);
+      if (!(Y >= 1900 && Y <= 9999)) return null;
+      if (!(M >= 1 && M <= 12)) return null;
+      if (!(D >= 1 && D <= 31)) return null;
+      return { Y, M, D };
+    }
+
+    // Default patterns if server didn't compute guessed_date:
+    // 1) IMG-YYYYMMDD-WAXXXX.*
+    // 2) YYYYMMDD in filename
+    // 3) YYYY-MM-DD in filename
+    function defaultGuesses(name) {
+      const res = [];
+      const p1 = /IMG-(?<year>\d{4})(?<month>\d{2})(?<day>\d{2})-WA\d+/i;
+      const p2 = /(?<!\d)(?<year>\d{4})(?<month>\d{2})(?<day>\d{2})(?!\d)/;
+      const p3 = /(?<!\d)(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})(?!\d)/;
+
+      [p1, p2, p3].forEach(rx => {
+        const m = name.match(rx);
+        if (m && m.groups) {
+          const d = buildDate(m.groups.year, m.groups.month, m.groups.day);
+          if (d) res.push(d);
+        }
+      });
+      // de-dup by string key
+      const seen = new Set();
+      return res.filter(d => {
+        const k = d.Y + '-' + d.M + '-' + d.D;
+        if (seen.has(k)) { return false; }
+        seen.add(k); return true;
+      });
+    }
+
+    function userPatterns() {
+      const ta = document.getElementById('patterns');
+      if (!ta) return [];
+      return ta.value.split('\n').map(s => s.trim()).filter(Boolean);
+    }
+
+    function matchUserPatterns(filename) {
+      const pats = userPatterns();
+      const out = [];
+      for (const p of pats) {
+        try {
+          // Expect named groups year/month/day. Use JS regex.
+          // Remove leading/trailing slashes if user pasted /.../ style.
+          let body = p;
+          if (body.startsWith('/') && body.lastIndexOf('/') > 0) {
+            body = body.slice(1, body.lastIndexOf('/'));
+          }
+          const rx = new RegExp(body, 'i');
+          const m = filename.match(rx);
+          if (m && m.groups) {
+            const d = buildDate(m.groups.year, m.groups.month, m.groups.day);
+            if (d) out.push(d);
+          }
+        } catch (e) {
+          console.warn('Bad pattern:', p, e);
+        }
+      }
+      return out;
+    }
+
+    function computeGuessForRow(tr) {
+      const filename = tr.dataset.filename || '';
+      const actual = tr.dataset.actual || '';
+      const actualTime = getActualTimePart(actual);
+
+      // Use server-provided guess if present in cell
+      let guessCell = tr.querySelector('.guess-date');
+      let serverGuess = guessCell && guessCell.textContent && guessCell.textContent.trim() !== '—'
+        ? guessCell.textContent.trim() : null;
+
+      let guessDateObj = null;
+
+      if (serverGuess) {
+        // Expect YYYY-MM-DD
+        const m = serverGuess.match(/(\d{4})-(\d{2})-(\d{2})/);
+        if (m) { guessDateObj = { Y: +m[1], M: +m[2], D: +m[3] }; }
+      }
+
+      if (!guessDateObj) {
+        const user = matchUserPatterns(filename);
+        const defs = defaultGuesses(filename);
+        const candidates = [...user, ...defs];
+        if (candidates.length > 0) guessDateObj = candidates[0];
+      }
+
+      // Fill Actual time cell
+      const actualTimeCell = tr.querySelector('.actual-time');
+      if (actualTime && actualTimeCell) {
+        actualTimeCell.textContent = pad(actualTime.h) + ':' + pad(actualTime.m) + ':' + pad(actualTime.s) + 'Z';
+      } else if (actualTimeCell) {
+        actualTimeCell.innerHTML = '<span class="muted">—</span>';
+      }
+
+      // Fill guess cells
+      const gdCell = tr.querySelector('.guess-date');
+      const gdtCell = tr.querySelector('.guess-dt');
+
+      if (guessDateObj) {
+        const y = guessDateObj.Y, m = pad(guessDateObj.M), d = pad(guessDateObj.D);
+        const dateStr = `${y}-${m}-${d}`;
+        if (gdCell) gdCell.textContent = dateStr;
+
+        if (actualTime) {
+          const iso = `${dateStr}T${pad(actualTime.h)}:${pad(actualTime.m)}:${pad(actualTime.s)}Z`;
+          if (gdtCell) gdtCell.textContent = iso;
+          tr.dataset.guess = iso;
+        } else {
+          // Fallback midnight UTC if no actual time available
+          const iso = `${dateStr}T00:00:00Z`;
+          if (gdtCell) gdtCell.textContent = iso;
+          tr.dataset.guess = iso;
+        }
+      } else {
+        if (gdCell) gdCell.innerHTML = '<span class="muted">—</span>';
+        if (gdtCell) gdtCell.innerHTML = '<span class="muted">—</span>';
+        tr.dataset.guess = '';
+      }
+    }
+
+    function recomputeAllGuesses() {
+      document.querySelectorAll('#tbody tr').forEach(computeGuessForRow);
+    }
+
+    // -------- Update Calls --------
+    async function updateOne(id, isoGuess) {
+      // POST /update with JSON: { id, newDateTime }
+      const res = await fetch('/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: id, newDateTime: isoGuess })
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error('Update failed: ' + t);
+      }
+      return await res.json().catch(() => ({}));
+    }
+
+    async function updateBulk(rows) {
+      const payload = rows.map(tr => ({ id: tr.dataset.id, newDateTime: tr.dataset.guess }));
+      const res = await fetch('/update_bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates: payload })
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error('Bulk update failed: ' + t);
+      }
+      return await res.json().catch(() => ({}));
+    }
+
+    // -------- Wire-up --------
+    function setWorking(on) {
+      document.getElementById('progressBar').style.display = on ? 'block' : 'none';
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      // Initial compute
+      recomputeAllGuesses();
+
+      // Recompute when patterns change
+      const patterns = document.getElementById('patterns');
+      if (patterns) {
+        patterns.addEventListener('change', recomputeAllGuesses);
+        patterns.addEventListener('keyup', e => { if (e.key === 'Enter') recomputeAllGuesses(); });
+      }
+
+      // Check-all
+      const checkAll = document.getElementById('checkAll');
+      if (checkAll) {
+        checkAll.addEventListener('change', (e) => {
+          document.querySelectorAll('.rowCheck').forEach(cb => { cb.checked = e.target.checked; });
+        });
+      }
+      document.getElementById('btnSelectAll').addEventListener('click', (e) => {
+        e.preventDefault();
+        document.querySelectorAll('.rowCheck').forEach(cb => cb.checked = true);
+      });
+      document.getElementById('btnClearSel').addEventListener('click', (e) => {
+        e.preventDefault();
+        document.querySelectorAll('.rowCheck').forEach(cb => cb.checked = false);
+      });
+
+      // Per-row Update
+      document.querySelectorAll('.updateBtn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          const id = btn.dataset.id;
+          const tr = btn.closest('tr');
+          computeGuessForRow(tr); // ensure fresh
+          const isoGuess = tr.dataset.guess;
+
+          if (!isoGuess) {
+            alert('No guessed datetime for this row. Adjust patterns first.');
+            return;
+          }
+          setWorking(true);
+          try {
+            const out = await updateOne(id, isoGuess);
+            tr.style.background = '#ecfdf5'; // light success
+            setTimeout(() => tr.style.background = '', 800);
+            console.log('Update OK', out);
+          } catch (err) {
+            tr.style.background = '#fef2f2'; // light error
+            alert(err.message);
+            console.error(err);
+          } finally {
+            setWorking(false);
+          }
+        });
+      });
+
+      // Update All
+      document.getElementById('btnUpdateAll').addEventListener('click', async (e) => {
+        e.preventDefault();
+        const rows = Array.from(document.querySelectorAll('#tbody tr'))
+          .filter(tr => tr.querySelector('.rowCheck').checked);
+
+        const targetRows = rows.length ? rows : Array.from(document.querySelectorAll('#tbody tr'));
+        targetRows.forEach(computeGuessForRow);
+
+        const valid = targetRows.filter(tr => tr.dataset.guess);
+        if (valid.length === 0) {
+          alert('No rows have a guessed datetime. Adjust patterns first.');
+          return;
+        }
+        if (!confirm(`Update ${valid.length} asset(s)?`)) return;
+
+        setWorking(true);
+        try {
+          const out = await updateBulk(valid);
+          // Mark rows as updated
+          valid.forEach(tr => {
+            tr.style.background = '#ecfdf5';
+            setTimeout(() => tr.style.background = '', 800);
+          });
+          console.log('Bulk update OK', out);
+          alert('Bulk update completed.');
+        } catch (err) {
+          alert(err.message);
+          console.error(err);
+        } finally {
+          setWorking(false);
+        }
+      });
+    });
+  </script>
+</body>
+
+</html>
