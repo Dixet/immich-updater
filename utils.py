@@ -1,5 +1,13 @@
+"""Utility helpers for filename pattern matching and datetime mangling.
+
+Patterns are regular expressions that may either use named groups to
+extract year/month/etc. or be paired with a strptime-like format string.
+This module is responsible for compiling those patterns, guessing a
+`datetime` from a filename, and normalizing/merging time components.
+"""
+
 import re
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from datetime import datetime, timezone
 
 # compile_patterns returns a list of (compiled_regex, optional_strptime_format)
@@ -32,6 +40,12 @@ def compile_patterns(patterns_text: str) -> List[Tuple[re.Pattern, Optional[str]
     return compiled
 
 def _from_named_groups(m: re.Match) -> Optional[datetime]:
+    """If a match contains named date/time groups, convert them to datetime.
+
+    The supported names are `year`, `month`, `day`, `hour`, `minute`, and
+    `second`.  Missing fields are defaulted to sensible values (e.g. month
+    and day default to 1).  If no `year` group is present we return `None`.
+    """
     gd = m.groupdict()
     if not gd:
         return None
@@ -48,32 +62,49 @@ def _from_named_groups(m: re.Match) -> Optional[datetime]:
     except Exception:
         return None
 
-def guess_dt_from_filename(filename: str, patterns: List[Tuple[re.Pattern, Optional[str]]]) -> Optional[datetime]:
-    """
-    Try each compiled pattern.
-    - If the regex has named groups (year/month/day[/hour/minute/second]), use them.
-    - Else if a strptime format is present via ::fmt= (or future pair), try that on the first full match.
+def guess_info_from_filename(filename: str, patterns: List[Tuple[re.Pattern, Optional[str]]]) -> Dict[str, Optional[datetime]]:
+    """Extract metadata from a filename using the given patterns.
+
+    Returns a dictionary with keys:
+
+    * ``dt`` – a :class:`datetime` if one could be parsed, otherwise ``None``.
+    * ``descr`` – the contents of a named capture group called ``descr`` if
+      the regex supplies one (useful for guessing a description from the
+      filename).
+
+    The extraction logic supports both named datetime groups and optional
+    `::fmt=` parsing, while preserving the named-group description.
     """
     for rx, fmt in patterns:
         m = rx.search(filename or "")
         if not m:
             continue
 
-        # 1) Try named groups first
+        info: Dict[str, Optional[datetime]] = {"dt": None, "descr": None}
+
+        # try named groups for datetime
         dt = _from_named_groups(m)
         if dt:
-            return dt
-
-        # 2) Try strptime on the first capturing group or the whole match
-        if fmt:
+            info["dt"] = dt
+        elif fmt:
+            # fall back to strptime if format string provided
             try_text = m.group(1) if m.lastindex and m.lastindex >= 1 else m.group(0)
             try:
-                dt2 = datetime.strptime(try_text, fmt).replace(tzinfo=timezone.utc)
-                return dt2
+                info["dt"] = datetime.strptime(try_text, fmt).replace(tzinfo=timezone.utc)
             except Exception:
                 pass
 
-    return None
+        # capture a description if the regex supplied it
+        gd = m.groupdict()
+        if "descr" in gd and gd.get("descr"):
+            info["descr"] = gd.get("descr")
+
+        return info
+
+    # if we fall out of the loop we never matched any pattern; return
+    # an empty result rather than None so callers don't blow up.
+    return {"dt": None, "descr": None}
+
 
 def to_iso_z(dt: Optional[datetime]) -> Optional[str]:
     if not dt:

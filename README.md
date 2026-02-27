@@ -39,7 +39,12 @@ A Flask-based web application for managing Immich asset metadata. This tool help
 
 - Python 3.10 or higher
 - Access to an Immich instance
-- Immich API key with `asset.update` permission
+- Immich API key with permissions
+  - `asset.read`
+  - `asset.update`
+  - `tag.read`
+  - `tag.delete`
+  - `tag.asset`
 
 ### Installation
 
