@@ -25,6 +25,37 @@ class ImmichClient:
         # internal helper to ensure the base_url is always prefixed
         return f"{self.base_url}{path}"
 
+    def _extract_tag_ids_from_asset(self, asset: Dict[str, Any]) -> Optional[set[str]]:
+        """Extract tag IDs from an asset across common response shapes.
+
+        Returns a set of IDs when tag fields are present. Returns None when
+        no recognizable tag field exists in the payload.
+        """
+        tag_ids: set[str] = set()
+        has_tag_field = False
+
+        tags = asset.get("tags")
+        if isinstance(tags, list):
+            has_tag_field = True
+            for t in tags:
+                if isinstance(t, dict):
+                    tid = t.get("id") or t.get("tagId")
+                    if isinstance(tid, str) and tid:
+                        tag_ids.add(tid)
+                elif isinstance(t, str) and t:
+                    tag_ids.add(t)
+
+        tag_ids_field = asset.get("tagIds")
+        if isinstance(tag_ids_field, list):
+            has_tag_field = True
+            for tid in tag_ids_field:
+                if isinstance(tid, str) and tid:
+                    tag_ids.add(tid)
+
+        if not has_tag_field:
+            return None
+        return tag_ids
+
     # --- simple helper to verify connection ---
     def whoami(self) -> Dict[str, Any]:
         """Perform a lightweight request to validate the API key and server.
@@ -149,7 +180,7 @@ class ImmichClient:
     def remove_tag_from_asset(self, asset_id: str, tag_id: str) -> bool:
         """
         Remove a tag from an asset.
-        Immich API endpoint: DELETE /api/tags/{tagId}/assets
+        Immich API endpoint: DELETE /api/tags/{tag_id}/assets
         Payload: {"ids": ["assetId"]}
         """
         payload = {"ids": [asset_id]}
@@ -160,4 +191,32 @@ class ImmichClient:
             timeout=30
         )
         r.raise_for_status()
+
+        response_data: Any = None
+        if r.content:
+            try:
+                response_data = r.json()
+            except ValueError as ex:
+                raise RuntimeError(
+                    f"Tag removal returned non-JSON body (status {r.status_code}): {r.text[:300]}"
+                ) from ex
+
+        if isinstance(response_data, dict):
+            if response_data.get("error"):
+                raise RuntimeError(f"Tag removal API error: {response_data.get('error')}")
+            if response_data.get("success") is False:
+                raise RuntimeError(f"Tag removal API reported success=false: {response_data}")
+
+        refreshed = self.get_asset(asset_id)
+        refreshed_tag_ids = self._extract_tag_ids_from_asset(refreshed)
+        if refreshed_tag_ids is None:
+            raise RuntimeError(
+                f"Tag removal verification failed for asset {asset_id}: no tag fields in asset response"
+            )
+
+        if tag_id in refreshed_tag_ids:
+            raise RuntimeError(
+                f"Tag removal verification failed for asset {asset_id}: tag {tag_id} is still present"
+            )
+
         return True

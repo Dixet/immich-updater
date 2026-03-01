@@ -356,8 +356,9 @@ def ui_search() -> Response:
         "<input type='hidden' name='file' value='" + file_esc + "'>"
         "<input type='hidden' name='limit' value='" + str(limit) + "'>"
         "<input type='hidden' name='patterns' value='" + ptxt_hidden + "'>"
-        "<label><input type='checkbox' name='update_datetime' value='1' checked> Update datetime</label>"
+        "<label><input type='checkbox' name='update_datetime' value='1'> Update datetime</label>"
         "<label><input type='checkbox' name='update_description' value='1'> Update description</label>"
+        "<label><input type='checkbox' name='remove_tag_when_skipped' value='1'> Remove tag even when skipped</label>"
         "<button type='submit'>Update ALL (" + str(count_visible) + ")</button>"
         "</form>"
         "</div>"
@@ -432,6 +433,7 @@ def update_all() -> Response:
     # New: checkboxes control which metadata fields are updated
     update_datetime = (request.form.get("update_datetime") or "") == "1"
     update_description = (request.form.get("update_description") or "") == "1"
+    remove_tag_when_skipped = (request.form.get("remove_tag_when_skipped") or "") == "1"
     compiled = compile_patterns(patterns_text) if patterns_text.strip() else []
 
     client = mk_client()
@@ -447,8 +449,8 @@ def update_all() -> Response:
             tag_id=tag_uuid, page=1, size=limit, filename_contains=file_contains or None
         )
 
-    # New: if user unchecks both boxes, perform no updates
-    if not update_datetime and not update_description:
+    # If user unchecks all boxes, perform no changes
+    if not update_datetime and not update_description and not remove_tag_when_skipped:
         back_qs = (
             "tag=" + quote(tag_name, safe="") +
             "&file=" + quote(file_contains, safe="") +
@@ -506,6 +508,12 @@ def update_all() -> Response:
         # New: skip when selected updates cannot be derived for this asset
         if not new_iso and description_value is None:
             skipped += 1
+            if remove_tag_when_skipped and tag_uuid:
+                try:
+                    asset_id = a.get("id", "")
+                    client.remove_tag_from_asset(asset_id, tag_uuid)
+                except Exception as tag_ex:
+                    errors.append(f"{a.get('id','?')}: Tag removal failed on skipped asset: {tag_ex}")
             continue
 
         try:
@@ -519,7 +527,18 @@ def update_all() -> Response:
             # Remove the tag used for search after successful update
             if tag_uuid:
                 try:
-                    client.remove_tag_from_asset(a.get("id", ""), tag_uuid)
+                    asset_id = a.get("id", "")
+                    client.remove_tag_from_asset(asset_id, tag_uuid)
+
+                    # Verify removal to catch silent API failures.
+                    refreshed = client.get_asset(asset_id)
+                    tag_ids = set()
+                    for t in (refreshed.get("tags") or []):
+                        if isinstance(t, dict) and t.get("id"):
+                            tag_ids.add(t.get("id"))
+
+                    if tag_uuid in tag_ids:
+                        errors.append(f"{asset_id}: Tag still present after remove call.")
                 except Exception as tag_ex:
                     # Log tag removal error but don't fail the update
                     errors.append(f"{a.get('id','?')}: Tag removal failed: {tag_ex}")
